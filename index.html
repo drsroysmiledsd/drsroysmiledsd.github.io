@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SmileAI – Final Clinical Version</title>
+<style>
+body { margin:0; background:#071028; color:#e6eef6; font-family:Inter,Arial }
+.wrap { max-width:980px; margin:16px auto; padding:12px }
+.card { background:rgba(255,255,255,0.03); padding:14px; border-radius:14px; margin-top:16px }
+.btn { padding:10px 14px; background:#1e293b; color:white; border:none; border-radius:8px; font-size:14px; margin:4px 0; cursor:pointer }
+.btn:disabled { opacity:0.4; cursor:not-allowed }
+.preview { width:100%; border-radius:12px; margin-top:10px; display:none }
+canvas { max-width:100%; border-radius:12px; background:white; display:none }
+.modal { position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.6); z-index:9999 }
+.modalBox { background:#071428; padding:18px; border-radius:10px; width:92%; max-width:420px; color:#e6eef6 }
+.smallInput { width:100%; padding:8px; margin-bottom:8px; border-radius:6px; border:1px solid rgba(255,255,255,0.06); background:transparent; color:#e6eef6 }
+</style>
+</head>
+
+<body>
+
+<!-- PIN GATE -->
+<div id="pinGate" style="position:fixed;inset:0;background:#071026;display:flex;flex-direction:column;justify-content:center;align-items:center;z-index:9999">
+  <h2>Protected Clinical Access</h2>
+  <p style="color:#94a3b8">Enter 6-digit PIN</p>
+  <div id="pinText" style="letter-spacing:12px;font-size:28px;margin:10px 0">______</div>
+  <div id="pinPad"></div>
+  <p id="pinErr" style="color:#f87171;display:none;margin-top:10px">Incorrect PIN</p>
+</div>
+
+<!-- MAIN APP -->
+<div id="app" class="wrap" style="display:none">
+
+<h1>SmileAI — Final Version</h1>
+
+<div class="card">
+  <div style="color:#9fb3c8">Upload Patient Photo</div>
+  <button class="btn" id="pickFile">Choose Image</button>
+  <button class="btn" id="useCamera">Camera</button>
+  <input type="file" id="fileInput" accept="image/*" style="display:none">
+
+  <div style="margin-top:10px">
+    <button class="btn" id="generateBtn" disabled>Generate After Image</button>
+    <button class="btn" id="composeBtn" disabled>Create Before–After</button>
+    <button class="btn" id="dlAfter" disabled>Download After 1:1</button>
+    <button class="btn" id="dlComposite" disabled>Download Composite</button>
+  </div>
+
+  <div id="status" style="margin-top:8px;color:#9fb3c8">
+    Tip: Use clear portrait photos showing upper teeth.
+  </div>
+
+  <img id="preview" class="preview" alt="preview image">
+  <canvas id="canvas"></canvas>
+</div>
+
+</div>
+
+<!-- API Key update modal (PIN-protected) -->
+<div id="apiModal" class="modal">
+  <div class="modalBox">
+    <h3>Update OpenAI API Key</h3>
+    <p>If your key is expired or out of quota you can update it here (PIN required).</p>
+    <input id="modalPin" class="smallInput" placeholder="Admin PIN">
+    <input id="modalKey" class="smallInput" placeholder="Paste new OpenAI API Key">
+    <div style="display:flex;gap:8px">
+      <button class="btn" id="submitKeyBtn">Update Key</button>
+      <button class="btn" id="openRenderBtn">Open Render Dashboard</button>
+    </div>
+    <div id="modalMsg" style="margin-top:8px;color:#fca5a5"></div>
+  </div>
+</div>
+
+<script src="pin.js"></script>
+<script>
+// ---------------- PIN SYSTEM ----------------
+const pinPad = document.getElementById("pinPad");
+const pinText = document.getElementById("pinText");
+const pinErr = document.getElementById("pinErr");
+let enteredPIN = "";
+const correctPIN = "382003";
+
+function renderPad(){
+  pinPad.innerHTML = "";
+  for(let i=1;i<=9;i++){ addBtn(i); }
+  addBtn(0);
+}
+function addBtn(n){
+  const b = document.createElement("button");
+  b.textContent = n;
+  b.style.cssText = "width:60px;height:60px;margin:6px;font-size:20px;border-radius:8px;background:#1e293b;color:white;border:none";
+  b.onclick = ()=> pressDigit(n);
+  pinPad.appendChild(b);
+}
+function pressDigit(n){
+  if(enteredPIN.length < 6){
+    enteredPIN += n;
+    pinText.textContent = enteredPIN.padEnd(6,"_");
+  }
+  if(enteredPIN.length === 6){
+    if(enteredPIN === correctPIN){
+      document.getElementById("pinGate").style.display="none";
+      document.getElementById("app").style.display="block";
+    } else {
+      pinErr.style.display="block";
+      enteredPIN="";
+      pinText.textContent="______";
+      setTimeout(()=> pinErr.style.display="none",1600);
+    }
+  }
+}
+renderPad();
+
+// ---------------- FRONTEND LOGIC ----------------
+const fileInput = document.getElementById("fileInput");
+const pickFile = document.getElementById("pickFile");
+const useCamera = document.getElementById("useCamera");
+const generateBtn = document.getElementById("generateBtn");
+const composeBtn = document.getElementById("composeBtn");
+const dlAfter = document.getElementById("dlAfter");
+const dlComposite = document.getElementById("dlComposite");
+const preview = document.getElementById("preview");
+const canvas = document.getElementById("canvas");
+const statusBox = document.getElementById("status");
+
+let selectedFile = null;
+let afterImageData = null;
+let compositeData = null;
+
+pickFile.onclick = ()=> fileInput.click();
+useCamera.onclick = ()=> { fileInput.setAttribute("capture","environment"); fileInput.click(); };
+
+fileInput.onchange = ()=>{
+  const f = fileInput.files[0];
+  if(!f) return;
+  selectedFile = f;
+  preview.src = URL.createObjectURL(f);
+  preview.style.display="block";
+  canvas.style.display="none";
+  generateBtn.disabled=false;
+  composeBtn.disabled=true;
+  dlAfter.disabled=true;
+  dlComposite.disabled=true;
+};
+
+// convert file to PNG Base64
+async function toPNGDataURL(file){
+  return new Promise((res,rej)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext("2d").drawImage(img,0,0);
+      res(c.toDataURL("image/png"));
+    };
+    img.onerror = rej;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// create mask for teeth region (simple heuristic)
+async function createAutoMask(pngDataURL){
+  const img = await loadImg(pngDataURL);
+  const size = 1024;
+  const c = document.createElement("canvas");
+  c.width=size; c.height=size;
+  const ctx = c.getContext("2d");
+
+  const ratio = Math.max(size/img.width, size/img.height);
+  const nw = img.width*ratio, nh = img.height*ratio;
+  const ox = (size-nw)/2, oy = (size-nh)/2;
+  ctx.drawImage(img,ox,oy,nw,nh);
+
+  const d = ctx.getImageData(0,0,size,size);
+  const data = d.data;
+  const m = ctx.createImageData(size,size);
+  const md = m.data;
+
+  for(let i=0;i<data.length;i+=4){
+    const r=data[i], g=data[i+1], b=data[i+2];
+    const lum = (0.2126*r + 0.7152*g + 0.0722*b);
+    const sat = (Math.max(r,g,b)-Math.min(r,g,b)) / (Math.max(r,g,b)||1);
+    const py = Math.floor((i/4)/size);
+    if(py>size*0.45 && py<size*0.88 && lum>140 && sat<0.5){
+      md[i]=255; md[i+1]=255; md[i+2]=255; md[i+3]=255;
+    } else {
+      md[i]=0; md[i+1]=0; md[i+2]=0; md[i+3]=0;
+    }
+  }
+  ctx.putImageData(m,0,0);
+  return await new Promise(res=>c.toBlob(res,"image/png"));
+}
+
+function loadImg(src){
+  return new Promise((res,rej)=>{
+    const i=new Image();
+    i.onload=()=>res(i);
+    i.onerror=rej;
+    i.src=src;
+  });
+}
+
+// call proxy generate endpoint
+async function callProxyGenerate(pngDataURL, maskBlob, promptText){
+  const proxyURL = (location.hostname === 'localhost' ? 'http://localhost:3000' : 'https://smileai-proxy.onrender.com');
+  const fd = new FormData();
+  const imgBlob = await (await fetch(pngDataURL)).blob();
+  fd.append("image", imgBlob, "before.png");
+  fd.append("mask", maskBlob, "mask.png");
+  fd.append("prompt", promptText);
+  const resp = await fetch(proxyURL + "/generate", { method:"POST", body: fd });
+  return resp;
+}
+
+generateBtn.onclick = async()=>{
+  try{
+    if(!selectedFile){ alert("Please choose a photo"); return; }
+    generateBtn.disabled=true;
+    statusBox.textContent="Preparing image...";
+    const png = await toPNGDataURL(selectedFile);
+    statusBox.textContent="Generating mask...";
+    const mask = await createAutoMask(png);
+    statusBox.textContent="Sending to server...";
+    const prompt = "Perform realistic digital smile design: align anterior teeth, close small gaps, maintain natural shade and facial features.";
+    const r = await callProxyGenerate(png, mask, prompt);
+    if(!r.ok){
+      let j=null;
+      try{ j=await r.json(); }catch(e){ j={error:r.statusText}; }
+      console.error("Proxy error", r.status, j);
+      if(j && j.status === 'api_error'){
+        showApiModal(j.reason || 'api_issue');
+      } else {
+        alert("Generation failed: "+(j?.error||j?.message||r.statusText));
+      }
+      statusBox.textContent="Generation failed.";
+      generateBtn.disabled=false;
+      return;
+    }
+    const j = await r.json();
+    if(j.image){
+      afterImageData = j.image;
+      preview.src = afterImageData;
+      preview.style.display="block";
+      statusBox.textContent="Generation complete.";
+      composeBtn.disabled=false;
+      dlAfter.disabled=false;
+    } else {
+      alert("No image returned from server");
+    }
+  }catch(e){
+    console.error(e);
+    alert("Error: "+(e.message||e));
+    statusBox.textContent="Error during generation.";
+  } finally {
+    generateBtn.disabled=false;
+  }
+};
+
+// API modal logic
+function showApiModal(reason){
+  document.getElementById("apiModal").style.display="flex";
+  document.getElementById("modalMsg").textContent = reason === 'quota_exceeded' ? 'Quota exceeded' : (reason==='invalid_api_key'?'Invalid API key':'API issue');
+}
+document.getElementById("openRenderBtn").onclick = ()=> window.open("https://dashboard.render.com", "_blank");
+
+document.getElementById("submitKeyBtn").onclick = async ()=>{
+  const pin = document.getElementById("modalPin").value.trim();
+  const key = document.getElementById("modalKey").value.trim();
+  if(!pin || !key){ document.getElementById("modalMsg").textContent = "Enter PIN and key"; return; }
+  try{
+    const proxyURL = (location.hostname === 'localhost' ? 'http://localhost:3000' : 'https://smileai-proxy.onrender.com');
+    const resp = await fetch(proxyURL + "/update-key", {
+      method:"POST",
+      headers: { "Content-Type":"application/json" },
+      body: JSON.stringify({ pin, key })
+    });
+    const j = await resp.json();
+    if(resp.ok && j.status === 'ok'){
+      document.getElementById("apiModal").style.display="none";
+      alert("API key updated in proxy server.");
+    } else {
+      document.getElementById("modalMsg").textContent = j.error || j.message || "Update failed";
+    }
+  }catch(err){
+    document.getElementById("modalMsg").textContent = "Network error";
+    console.error(err);
+  }
+};
+
+// Compose & downloads
+function drawFit(ctx,img,x,y,w,h){ const ratio=Math.max(w/img.width,h/img.height); const nw=img.width*ratio, nh=img.height*ratio; const ox=x+(w-nw)/2, oy=y+(h-nh)/2; ctx.drawImage(img,ox,oy,nw,nh); }
+
+document.getElementById("composeBtn").onclick = async ()=>{
+  if(!afterImageData || !selectedFile) return;
+  const before = await loadImg(URL.createObjectURL(selectedFile));
+  const after = await loadImg(afterImageData);
+  const W=2048, H=2048;
+  canvas.width=W; canvas.height=H;
+  const ctx = canvas.getContext("2d");
+  drawFit(ctx,before,0,0,W/2,H); drawFit(ctx,after,W/2,0,W/2,H);
+  ctx.strokeStyle="#d9b24a"; ctx.lineWidth=6; ctx.beginPath(); ctx.moveTo(W/2,40); ctx.lineTo(W/2,H-40); ctx.stroke();
+  ctx.fillStyle="rgba(0,0,0,0.6)"; ctx.fillRect(0,H-140,W,140);
+  ctx.fillStyle="#dbeefe"; ctx.font="26px sans-serif"; ctx.fillText("Dr. S. Roy’s SMILE Dental Clinic • Jalpaiguri • WhatsApp 8918935056", 40, H-60);
+  try{ const logo = await loadLogo(); const logoW = Math.round(W*0.12); const logoH = Math.round(logo.height*(logoW/logo.width)); ctx.globalAlpha=0.95; ctx.drawImage(logo,W-logoW-40,H-60-logoH,logoW,logoH); ctx.globalAlpha=1.0; }catch(e){}
+  canvas.style.display="block"; preview.style.display="none";
+  dlComposite.disabled=false;
+  compositeData = canvas.toDataURL("image/jpeg",0.94);
+};
+
+document.getElementById("dlComposite").onclick = ()=>{
+  if(!compositeData){ alert("No composite"); return; }
+  const a = document.createElement("a"); a.href = compositeData; a.download = "before_after_smile.jpg"; a.click();
+};
+
+document.getElementById("dlAfter").onclick = async ()=>{
+  if(!afterImageData){ alert("No after image"); return; }
+  const img = await loadImg(afterImageData);
+  const c = document.createElement("canvas"); c.width = img.naturalWidth || 1024; c.height = img.naturalHeight || 1024;
+  const ctx = c.getContext("2d"); ctx.drawImage(img,0,0,c.width,c.height);
+  try{ const logo = await loadLogo(); const logoW = Math.round(c.width*0.12); const logoH = Math.round(logo.height*(logoW/logo.width)); ctx.globalAlpha=0.95; ctx.drawImage(logo,c.width-logoW-24,c.height-logoH-24,logoW,logoH); ctx.globalAlpha=1.0; }catch(e){}
+  const data = c.toDataURL("image/png"); const a = document.createElement("a"); a.href = data; a.download = "after_smile_1to1.png"; a.click();
+};
+
+function loadLogo(){ return new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>res(img); img.onerror=rej; img.src="assets/logo.png"; }); }
+</script>
+</body>
+</html>
