@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dr. Sudip Roy - Internal AI Tool</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f4f6f9; color: #333; }
+        .container { background: white; padding: 40px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); border-top: 5px solid #0056b3; }
+        h1 { color: #0056b3; text-align: center; margin-bottom: 10px; }
+        p.subtitle { text-align: center; color: #666; margin-bottom: 30px; font-size: 0.9em; }
+        
+        .upload-box { 
+            border: 2px dashed #0056b3; background: #f0f7ff; padding: 30px; 
+            text-align: center; border-radius: 10px; cursor: pointer; transition: 0.3s; 
+        }
+        .upload-box:hover { background: #e0efff; }
+        
+        #imagePreview { max-width: 100%; max-height: 300px; margin-top: 20px; border-radius: 8px; display: none; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        
+        /* Security Input Styling */
+        .security-section { margin-top: 25px; background: #fff3cd; padding: 15px; border-radius: 8px; border: 1px solid #ffeeba; }
+        .pin-input { width: 100%; padding: 12px; margin-top: 5px; border: 1px solid #ccc; border-radius: 5px; font-size: 16px; letter-spacing: 3px; font-weight: bold; text-align: center; }
+        
+        textarea { width: 100%; padding: 15px; border: 1px solid #ddd; border-radius: 8px; margin-top: 20px; font-size: 16px; box-sizing: border-box; resize: vertical; }
+        
+        button { 
+            background-color: #0056b3; color: white; border: none; padding: 15px 30px; 
+            font-size: 18px; font-weight: bold; border-radius: 30px; cursor: pointer; 
+            width: 100%; margin-top: 20px; transition: background 0.3s; 
+        }
+        button:hover { background-color: #004494; }
+        
+        #responseArea { margin-top: 30px; padding: 25px; background: #fff; border-left: 5px solid #28a745; line-height: 1.6; display: none; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .error-msg { color: #dc3545; font-weight: bold; text-align: center; margin-top: 10px; display: none; padding: 10px; background: #ffe6e6; border-radius: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🔒 Restricted Access: SMILE AI</h1>
+    <p class="subtitle">Dr. Sudip Roy's Clinic Internal Tool</p>
+
+    <div class="upload-box" onclick="document.getElementById('fileInput').click()">
+        <p>📸 Upload Patient Photo</p>
+        <input type="file" id="fileInput" accept="image/*" style="display: none">
+        <img id="imagePreview" alt="Preview">
+    </div>
+
+    <div class="security-section">
+        <label for="clinicPin">🔑 <strong>Enter Clinic PIN:</strong></label>
+        <input type="password" id="clinicPin" class="pin-input" placeholder="Enter PIN to Unlock">
+    </div>
+
+    <textarea id="userPrompt" rows="3" placeholder="Analysis instructions (e.g. 'Check smile arc')..."></textarea>
+    
+    <button id="analyzeBtn" onclick="analyzeImage()">Authenticate & Analyze</button>
+    
+    <div id="loading" style="display:none; text-align:center; margin-top:20px; color:#0056b3;">Verifying PIN & Processing... ⏳</div>
+    <div id="errorMsg" class="error-msg"></div>
+    <div id="responseArea"></div>
+</div>
+
+<script>
+    // YOUR SECURE BACKEND LINK
+    const WORKER_URL = "https://calm-fire-91bb.drsudiproy-net.workers.dev";
+
+    let base64Image = null;
+    const fileInput = document.getElementById('fileInput');
+    const preview = document.getElementById('imagePreview');
+    const responseArea = document.getElementById('responseArea');
+    const loading = document.getElementById('loading');
+    const btn = document.getElementById('analyzeBtn');
+    const errorMsg = document.getElementById('errorMsg');
+
+    fileInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onloadend = function() {
+                base64Image = reader.result.split(',')[1];
+                preview.src = reader.result;
+                preview.style.display = 'block';
+            }
+            reader.readAsDataURL(file);
+        }
+    });
+
+    async function analyzeImage() {
+        const pin = document.getElementById('clinicPin').value;
+        
+        // Basic check before sending
+        if (!pin) { 
+            alert("⚠️ Please enter the Clinic PIN."); 
+            return; 
+        }
+        if (!base64Image) { 
+            alert("📸 Please upload a photo."); 
+            return; 
+        }
+
+        loading.style.display = 'block';
+        responseArea.style.display = 'none';
+        errorMsg.style.display = 'none';
+        btn.disabled = true;
+        btn.innerText = "Verifying...";
+
+        const promptText = document.getElementById('userPrompt').value || "Analyze this dental image.";
+
+        try {
+            const response = await fetch(WORKER_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    prompt: promptText,
+                    imageParts: [{ inline_data: { mime_type: "image/jpeg", data: base64Image } }],
+                    accessCode: pin // 🔑 SENDING THE PIN TO CLOUDFLARE
+                })
+            });
+
+            const data = await response.json();
+
+            // Check if Access was Denied (401 Error)
+            if (response.status === 401) {
+                errorMsg.innerHTML = "⛔ <strong>ACCESS DENIED</strong><br>The PIN you entered is incorrect.";
+                errorMsg.style.display = 'block';
+            } 
+            // Check if AI responded successfully
+            else if (data.candidates && data.candidates[0].content) {
+                const text = data.candidates[0].content.parts[0].text;
+                responseArea.innerHTML = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+                responseArea.style.display = 'block';
+            } 
+            // Handle other errors
+            else {
+                errorMsg.innerText = "Error: " + (data.error || "Unknown error occurred.");
+                errorMsg.style.display = 'block';
+            }
+
+        } catch (error) {
+            errorMsg.innerText = "Connection Error. Please check your internet.";
+            errorMsg.style.display = 'block';
+        } finally {
+            loading.style.display = 'none';
+            btn.disabled = false;
+            btn.innerText = "Authenticate & Analyze";
+        }
+    }
+</script>
+
+</body>
+</html>
